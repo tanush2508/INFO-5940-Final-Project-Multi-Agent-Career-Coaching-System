@@ -1,0 +1,10 @@
+streamlit
+langchain
+langgraph
+openai
+chromadb
+langchain-community
+pydantic
+python-dotenv
+pandas
+numpy
