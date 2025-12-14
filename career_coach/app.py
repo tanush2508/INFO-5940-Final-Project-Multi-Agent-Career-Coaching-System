@@ -36,20 +36,31 @@ if not IMPORT_OK:
 
 # If we reach here, imports worked
 load_dotenv()
-
 st.success("✅ Imports loaded correctly.")
 
 # ---------------------------------------------------------------------
-# Session State Setup
+# Session State Setup  (keep this as a SharedState object)
 # ---------------------------------------------------------------------
 
 if "app_state" not in st.session_state:
+    # This creates an empty SharedState model; defaults are in graph/state.py
     st.session_state.app_state = SharedState()
 
 if "resume_graph" not in st.session_state:
     st.session_state.resume_graph = build_resume_graph()
 
 app_state: SharedState = st.session_state.app_state
+
+
+# ---------------------------------------------------------------------
+# Helper: convert SharedState -> dict for LangGraph
+# ---------------------------------------------------------------------
+
+def _state_to_dict(state: SharedState) -> dict:
+    # pydantic v2 uses model_dump, v1 uses dict
+    if hasattr(state, "model_dump"):
+        return state.model_dump()
+    return state.dict()
 
 
 # ---------------------------------------------------------------------
@@ -66,7 +77,6 @@ def _extract_text_from_upload(uploaded_file) -> str:
         return data.decode("utf-8", errors="ignore")
 
     if name.endswith(".pdf"):
-        # Basic PDF text extraction
         reader = PdfReader(io.BytesIO(data))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n\n".join(pages)
@@ -99,11 +109,32 @@ if st.button("Analyze Resume", type="primary"):
     if not text.strip():
         st.error("Could not read any text from the file. Please check the format.")
     else:
-        app_state.resume_profile = ResumeProfile(raw_text=text)
+        # Work with SharedState object
+        app_state: SharedState = st.session_state.app_state
+
+        # Initialize / update resume_profile
+        app_state.resume_profile = ResumeProfile(
+            raw_text=text,
+            skills=[],
+            experience_summary="",
+            years_experience=None,
+            suggestions=[],
+        )
+
         graph = st.session_state.resume_graph
-        app_state = graph.invoke(app_state)
-        st.session_state.app_state = app_state
+
+        # LangGraph expects a dict-like state, so convert
+        state_dict = _state_to_dict(app_state)
+        new_state_dict = graph.invoke(state_dict)
+
+        # Convert back into SharedState so the rest of the app can use dot-access
+        st.session_state.app_state = SharedState(**new_state_dict)
+        app_state = st.session_state.app_state
+
         st.success("Resume analyzed and job matches generated!")
+
+# Always re-read the current SharedState
+app_state: SharedState = st.session_state.app_state
 
 # Show analysis if available
 if app_state.resume_profile:
@@ -114,6 +145,13 @@ if app_state.resume_profile:
         st.write(rp.experience_summary)
     else:
         st.write("_Summary not computed yet. Click 'Analyze Resume' above._")
+
+    # 🔹 Approx. Years of Experience
+    st.subheader("Approx. Years of Experience")
+    if rp.years_experience is not None:
+        st.write(f"{rp.years_experience:.1f} years")
+    else:
+        st.write("_Not estimated yet._")
 
     st.subheader("Key Skills")
     if rp.skills:
@@ -143,9 +181,33 @@ if app_state.job_matches:
             f"{jm.title or 'Job'} at {jm.company or 'Company'} "
             f"({jm.location or 'Location'}) — Score: {jm.score:.2f}"
         )
+
         with st.expander(label):
-            st.markdown(f"**Match rationale:** {jm.rationale}")
+            # Fetch job description snippet for more context
+            full_desc = get_job_description_by_id(jm.job_id) or ""
+            if full_desc:
+                preview = full_desc[:700]
+                if len(full_desc) > 700:
+                    preview += "..."
+            else:
+                preview = ""
+
+            st.markdown("**Job overview:**")
+            if preview:
+                st.write(preview)
+            else:
+                st.write("_No description available from the API for this job._")
+
+            st.markdown("**Why this is a good match for you:**")
+            if jm.rationale:
+                st.write(jm.rationale)
+            else:
+                st.write("_No detailed rationale generated._")
+
+            st.markdown("---")
+
             if st.button("Select this job for interview practice", key=f"select_{i}"):
+                # Mutate SharedState object directly
                 app_state.selected_job_id = jm.job_id
                 app_state.interview_questions = []
                 app_state.feedback_history = []
@@ -173,15 +235,21 @@ if app_state.selected_job_id:
                 preview += "..."
             st.write(preview)
 
-    if not app_state.interview_questions:
-        if st.button("Generate Interview Questions", type="primary"):
-            app_state = generate_questions_node(app_state)
-            st.session_state.app_state = app_state
-            if app_state.interview_questions:
-                st.success(f"Generated {len(app_state.interview_questions)} questions.")
-            else:
-                st.error("Failed to generate questions. Try again.")
-    else:
+    # --- Generate questions button (always visible once a job is selected) ---
+    if st.button("Generate Interview Questions", type="primary"):
+        # Use the current SharedState
+        app_state = st.session_state.app_state
+        app_state = generate_questions_node(app_state)
+        st.session_state.app_state = app_state
+        app_state = st.session_state.app_state  # re-read
+        if app_state.interview_questions:
+            st.success(f"Generated {len(app_state.interview_questions)} questions.")
+        else:
+            st.error("Failed to generate questions. Try again.")
+
+    # --- Show questions if we have any ---
+    app_state = st.session_state.app_state  # make sure we have the latest
+    if app_state.interview_questions:
         st.subheader("Questions and Feedback")
 
         for idx, q in enumerate(app_state.interview_questions):
@@ -195,6 +263,7 @@ if app_state.selected_job_id:
             )
 
             if st.button("Get Feedback", key=f"feedback_{idx}") and user_answer.strip():
+                app_state = st.session_state.app_state
                 app_state = evaluate_answer_node(app_state, idx, user_answer)
                 st.session_state.app_state = app_state
 

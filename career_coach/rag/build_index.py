@@ -6,18 +6,21 @@ from dotenv import load_dotenv
 
 from .load_jobs import load_and_clean_jobs
 
-load_dotenv()  # load OPENAI_API_KEY
+load_dotenv()  # picks up OPENAI_API_KEY and OPENAI_BASE_URL
+
+CHROMA_PATH = Path("chroma_store")  # folder created at project root
+COLLECTION_NAME = "jobs"
 
 
 def build_index():
     jobs = load_and_clean_jobs()
     if not jobs:
-        raise ValueError("No jobs found to index. Fill data/jobs_raw.csv first.")
+        raise ValueError("No jobs found to index. Check data/jobs_raw.csv.")
 
-    client = chromadb.PersistentClient(path=str(Path("chroma_store")))
-    collection = client.get_or_create_collection("jobs")
+    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    collection = client.get_or_create_collection(COLLECTION_NAME)
 
-    embedder = OpenAIEmbeddings(model="text-embedding-3-small")
+    embedder = OpenAIEmbeddings(model="openai.text-embedding-3-small")
 
     texts = [
         job.description + "\n\n" + job.requirements
@@ -36,6 +39,7 @@ def build_index():
     print(f"Embedding {len(jobs)} job postings...")
     embeddings = embedder.embed_documents(texts)
 
+    # Clear old docs, then add
     collection.delete(where={})
     collection.add(
         ids=ids,
@@ -43,7 +47,7 @@ def build_index():
         metadatas=metadatas,
         documents=texts,
     )
-    print("Index built successfully.")
+    print("Index built successfully at", CHROMA_PATH)
 
 
 if __name__ == "__main__":

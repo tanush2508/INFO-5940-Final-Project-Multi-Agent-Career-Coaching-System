@@ -8,6 +8,8 @@ class ResumeProfile(BaseModel):
     experience_summary: str = ""
     years_experience: Optional[float] = None
     suggestions: List[str] = []
+    # 🌟 NEW: candidate-specific job search queries inferred from resume
+    job_search_queries: List[str] = []
 
 
 class JobMatch(BaseModel):
